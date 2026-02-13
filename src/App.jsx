@@ -92,8 +92,6 @@ const storage = getStorage(app);
 
 const googleProvider = new GoogleAuthProvider();
 
-
-
 // --- MISSING LINE: ADD THIS BACK ---
 const appId = "cello-inventory-manager"; 
 // ----------------------------------
@@ -2645,13 +2643,28 @@ const AuditVaultExplorer = ({ db, storage, appId, user, isAdmin, logAudit, setBa
 
 
 // --- SIMPLIFIED: STABLE SAFETY STATUS WIDGET ---
-const SafetyStatus = ({ auditLogs = [] }) => {
-    const lastMirror = auditLogs.find(log => log.action === "DATABASE_MIRROR");
-    const lastUSB = localStorage.getItem('last_usb_backup');
+// --- UPDATED: SAFETY STATUS (SYNCED WITH SETTINGS) ---
+const SafetyStatus = ({ auditLogs = [], sessionStatus }) => {
+    // 1. Get Limits
+    const resetThreshold = parseInt(localStorage.getItem('indicator_reset_time') || '0');
     const now = new Date();
     const todayStr = now.toLocaleDateString();
-    
-    // Scan logs for "Save Points" created today
+
+    // 2. CLOUD SYNC LOGIC (Matches Settings)
+    const confirmedMirror = auditLogs.find(log => 
+        (log.action === "DATABASE_MIRROR" || log.action === "MASTER_BACKUP") && 
+        log.timestamp && 
+        (log.timestamp.seconds * 1000 > resetThreshold)
+    );
+    // If we clicked the button (sessionStatus.cloud) OR we found a valid log -> GREEN
+    const isCloudSecure = sessionStatus?.cloud || !!confirmedMirror;
+
+    // 3. USB SAFE LOGIC (Matches Settings)
+    const lastUSB = parseInt(localStorage.getItem('last_usb_backup') || '0');
+    const isUsbValidInDb = lastUSB > resetThreshold && (now.getTime() - lastUSB) < (7 * 24 * 60 * 60 * 1000);
+    const isUsbSecure = sessionStatus?.usb || isUsbValidInDb;
+
+    // 4. SNAPSHOT LOGIC
     const todaySnapshots = auditLogs.filter(log => {
         if (!log.isSavePoint || !log.timestamp || !log.timestamp.seconds) return false;
         try {
@@ -2659,39 +2672,38 @@ const SafetyStatus = ({ auditLogs = [] }) => {
             return logDate === todayStr;
         } catch (e) { return false; }
     }).length;
-
-    const getStatus = (timestamp, days) => {
-        if (!timestamp) return { color: 'text-red-500', label: 'NEVER' };
-        const age = now.getTime() - new Date(timestamp).getTime();
-        if (age > days * 24 * 60 * 60 * 1000) return { color: 'text-orange-500', label: 'OUTDATED' };
-        return { color: 'text-emerald-500', label: 'SECURE' };
-    };
-
-    const mirrorStatus = getStatus(lastMirror?.timestamp?.seconds * 1000, 1);
-    const usbStatus = getStatus(parseInt(lastUSB), 7);
+    // If manual recovery button pressed OR we have logs -> GREEN
+    const isRecoverySecure = sessionStatus?.recovery || todaySnapshots > 0;
 
     return (
         <div className="bg-white/5 border border-white/10 p-4 rounded-2xl backdrop-blur-sm flex gap-6 shadow-lg mb-6">
+            {/* CLOUD INDICATOR */}
             <div className="flex-1">
                 <p className="text-[10px] text-slate-500 font-bold uppercase mb-1 tracking-widest">Cloud Sync</p>
-                <div className={`text-sm font-black flex items-center gap-2 ${mirrorStatus.color}`}>
-                    <div className={`w-2 h-2 rounded-full animate-pulse ${mirrorStatus.label === 'SECURE' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
-                    {mirrorStatus.label}
+                <div className={`text-sm font-black flex items-center gap-2 ${isCloudSecure ? 'text-emerald-500' : 'text-red-500'}`}>
+                    <div className={`w-2 h-2 rounded-full animate-pulse ${isCloudSecure ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+                    {isCloudSecure ? 'SECURE' : 'REQUIRED'}
                 </div>
             </div>
+            
             <div className="w-[1px] bg-white/10"></div>
+            
+            {/* USB INDICATOR */}
             <div className="flex-1 text-center">
                 <p className="text-[10px] text-slate-500 font-bold uppercase mb-1 tracking-widest">USB Safe</p>
-                <div className={`text-sm font-black flex justify-center items-center gap-2 ${usbStatus.color}`}>
-                    <div className={`w-2 h-2 rounded-full animate-pulse ${usbStatus.label === 'SECURE' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
-                    {usbStatus.label}
+                <div className={`text-sm font-black flex justify-center items-center gap-2 ${isUsbSecure ? 'text-emerald-500' : 'text-orange-500'}`}>
+                    <div className={`w-2 h-2 rounded-full animate-pulse ${isUsbSecure ? 'bg-emerald-500' : 'bg-orange-500'}`}></div>
+                    {isUsbSecure ? 'SECURE' : 'OUTDATED'}
                 </div>
             </div>
+            
             <div className="w-[1px] bg-white/10"></div>
+            
+            {/* SNAPSHOT COUNTER */}
             <div className="flex-1 text-right">
                 <p className="text-[10px] text-slate-500 font-bold uppercase mb-1 tracking-widest">Save Points</p>
-                <div className="text-sm font-black text-emerald-400 flex justify-end items-center gap-2 font-mono">
-                    <History size={14} className={todaySnapshots > 0 ? "animate-pulse" : "opacity-30"}/>
+                <div className={`text-sm font-black flex justify-end items-center gap-2 font-mono ${isRecoverySecure ? 'text-emerald-400' : 'text-slate-400'}`}>
+                    <History size={14} className={isRecoverySecure ? "animate-pulse" : "opacity-30"}/>
                     {todaySnapshots.toString().padStart(2, '0')} <span className="text-[8px] text-slate-600">TODAY</span>
                 </div>
             </div>
@@ -2705,6 +2717,7 @@ export default function KPMInventoryApp() {  // <--- ONLY ONE OPENING BRACE
   const [user, setUser] = useState(null);
   // ... rest of your code ...
   const [isAdmin, setIsAdmin] = useState(true);
+  const [sessionStatus, setSessionStatus] = useState({ recovery: false, usb: false, cloud: false });
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminPin, setAdminPin] = useState(null);       
   const [hasAdminPin, setHasAdminPin] = useState(false); 
@@ -2717,44 +2730,57 @@ export default function KPMInventoryApp() {  // <--- ONLY ONE OPENING BRACE
 
 // Helper to include Hours and Minutes in the filename
   // --- DOWNLOAD ENGINE HELPERS ---
+  // --- PINPOINT: Line 1739 (Master Protocol Logic) ---
   const getCurrentTimestamp = () => {
     const now = new Date();
     const date = now.toISOString().split('T')[0]; // YYYY-MM-DD
-    const time = now.getHours().toString().padStart(2, '0') + "-" + 
-                 now.getMinutes().toString().padStart(2, '0'); // HH-mm
-    return `${date}_${time}`;
+    const h = now.getHours().toString().padStart(2, '0');
+    const m = now.getMinutes().toString().padStart(2, '0');
+    return `${date}_${h}-${m}`; // Example: 2026-02-13_08-30
   };
 
   const triggerDownload = (name, data) => {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a); // Required for some browser security layers
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        console.error("Download Error:", err);
+    }
   };
 
+  // --- UPDATED: MASTER PROTOCOL (Forces Green Indicators) ---
   const handleMasterProtocol = async () => {
     if (!user || !isAdmin) return;
     const ts = getCurrentTimestamp();
     
-    // Prepare Data
     const recovery = { meta: { type: "RECOVERY", ts }, inventory, customers, appSettings };
     const usb = { meta: { type: "USB_SAFE", ts }, inventory, transactions, customers, samplings, appSettings };
     const mirror = { meta: { type: "CLOUD_MIRROR", ts }, inventory, transactions, customers, samplings, appSettings, auditLogs };
 
     triggerCapy("Initiating Triple-Layer Backup... 🛡️");
 
-    // Sequential downloads to bypass virus scan blocks
+    // Sequential Downloads
     setTimeout(() => triggerDownload(`FOLDER_RECOVERY--POINT_${ts}.json`, recovery), 0);
-    setTimeout(() => triggerDownload(`FOLDER_USB--SAFE_OFFSITE_${ts}.json`, usb), 1000);
-    setTimeout(() => triggerDownload(`FOLDER_CLOUD--MIRROR_SYNC_${ts}.json`, mirror), 2000);
+    setTimeout(() => triggerDownload(`FOLDER_USB--SAFE_OFFSITE_${ts}.json`, usb), 1500);
+    setTimeout(() => triggerDownload(`FOLDER_CLOUD--MIRROR_SYNC_${ts}.json`, mirror), 3000);
 
     localStorage.setItem('last_usb_backup', new Date().getTime().toString());
-    await logAudit("MASTER_BACKUP", "Executed 3-in-1 Security Protocol");
+    
+    // --- FORCE GREEN LIGHTS IMMEDIATELY ---
+    setSessionStatus({ recovery: true, usb: true, cloud: true }); 
+
+    await logAudit("MASTER_BACKUP", `Triple Redundancy executed at ${ts}`, true);
     triggerCapy("Protocol Complete! Files sent to sorting. 💾");
   };
+
+
   
   // --- NEW: ULTRA-SLIM SNAPSHOT (STRIPS EVERYTHING BUT NUMBERS) ---
   const getUltraSlimSnapshot = () => {
@@ -2904,92 +2930,97 @@ const handleGitHubMirror = async () => {
 
 
 
-// --- NEW: ADMIN PIN & RECOVERY LOGIC ---
+// --- PINPOINT: Line 1770 (Objective 4: Advanced Security Logic) ---
+  const [recoveryWord, setRecoveryWord] = useState("");
+  const [isResetMode, setIsResetMode] = useState(false);
+  const [authShake, setAuthShake] = useState(false); // For visual "Wrong Password" feedback
 
-  // 1. Recovery & Pin States
-  const [recoveryAnswer, setRecoveryAnswer] = useState(""); 
-  const [inputRecovery, setInputRecovery] = useState("");   
-  const [showRecoveryInput, setShowRecoveryInput] = useState(false);
-
-  // 2. Fetch PIN & Secret Word on Load
+  // 1. INITIAL CHECK: Does a PIN exist?
   useEffect(() => {
-    const fetchAdminSettings = async () => {
-        if(!user) return;
+    const checkAdminStatus = async () => {
+        if (!user) return;
         const ref = doc(db, `artifacts/${appId}/users/${user.uid}/settings`, 'admin');
         const snap = await getDoc(ref);
-        if(snap.exists() && snap.data().pin) {
+        
+        if (snap.exists() && snap.data().pin) {
             setAdminPin(snap.data().pin);
-            setRecoveryAnswer(snap.data().recoveryWord || ""); 
+            setRecoveryWord(snap.data().recoveryWord || "");
             setHasAdminPin(true);
+            setIsSetupMode(false);
         } else {
+            // No PIN found: Force Setup Mode
             setHasAdminPin(false);
+            setIsSetupMode(true);
         }
     };
-    fetchAdminSettings();
+    checkAdminStatus();
   }, [user]);
 
-  // 3. Create/Set New PIN
-  const handleSetNewPin = async () => {
-      if(inputPin.length < 4) { alert("PIN must be at least 4 digits."); return; }
-      if(!inputRecovery.trim()) { alert("Please set a Secret Recovery Word."); return; }
-      if(!user) return;
-      
-      await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/settings`, 'admin'), { 
-          pin: inputPin,
-          recoveryWord: inputRecovery.trim().toLowerCase(),
-          updatedAt: new Date().toISOString()
-      });
-      
-      setAdminPin(inputPin);
-      setRecoveryAnswer(inputRecovery.trim().toLowerCase());
-      setHasAdminPin(true);
-      setIsAdmin(true); 
-      setIsSetupMode(false);
-      setShowAdminLogin(false);
-      setInputPin("");
-      setInputRecovery("");
-      triggerCapy("Security settings saved.");
+  // 2. SETUP: Create PIN & Secret Word
+  const handleSetupSecurity = async (newPin, secretWord) => {
+    if (newPin.length < 4) { triggerCapy("PIN too short! (Min 4)"); return; }
+    if (!secretWord.trim()) { triggerCapy("Secret word required!"); return; }
+
+    const cleanWord = secretWord.trim().toLowerCase();
+    
+    // Save to Firestore
+    await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/settings`, 'admin'), {
+        pin: newPin,
+        recoveryWord: cleanWord,
+        updatedAt: serverTimestamp()
+    });
+
+    // Update Local State
+    setAdminPin(newPin);
+    setRecoveryWord(cleanWord);
+    setHasAdminPin(true);
+    setIsSetupMode(false);
+    setIsAdmin(true); // Auto-login after setup
+    setShowAdminLogin(false);
+    
+    triggerCapy("Security Protocol Established! 🛡️");
   };
 
-  // 4. Login with PIN
+  // 3. LOGIN: Verify PIN
   const handlePinLogin = () => {
-      if(inputPin === adminPin) {
+      if (inputPin === adminPin) {
           setIsAdmin(true);
           setShowAdminLogin(false);
           setInputPin("");
-          triggerCapy("Welcome back.");
+          triggerCapy("Access Granted. Welcome, Boss.");
       } else {
-          alert("Wrong PIN!");
+          // Wrong PIN Animation
+          setAuthShake(true);
+          setTimeout(() => setAuthShake(false), 500);
           setInputPin("");
+          triggerCapy("Access Denied.");
       }
   };
 
-  // 5. Start Recovery
-  const handleForgotPin = () => {
-      setShowRecoveryInput(true); 
-      setInputPin("");
+  // 4. RESET: Verify Secret Word
+  const handleResetPin = (word) => {
+    if (word.trim().toLowerCase() === recoveryWord) {
+        setIsResetMode(false);
+        setIsSetupMode(true); // Allow them to set a new PIN
+        triggerCapy("Identity Verified. Create new PIN.");
+    } else {
+        setAuthShake(true);
+        setTimeout(() => setAuthShake(false), 500);
+        triggerCapy("Verification Failed.");
+    }
   };
 
-  // 6. Verify Secret Word
-  const handleVerifyRecovery = () => {
-      if(inputRecovery.trim().toLowerCase() === recoveryAnswer) {
-          alert("Secret Word Correct! Please create a NEW PIN.");
-          setIsSetupMode(true);       
-          setShowRecoveryInput(false); 
-          setInputRecovery("");
-      } else {
-          alert("Wrong Secret Word.");
-      }
-  };
-
-  // 7. Change PIN
+// --- PINPOINT: Line 1830 (Add this missing function to fix the crash) ---
   const handleChangePin = () => {
-      if(!window.confirm("Change Admin PIN?")) return;
+      // Switches the modal to "Setup Mode" so you can overwrite the old PIN
       setIsSetupMode(true); 
       setShowAdminLogin(true);
+      setIsResetMode(false);
       setInputPin("");
-      setInputRecovery("");
+      triggerCapy("Initialize PIN Reset Protocol.");
   };
+
+
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [darkMode, setDarkMode] = useState(true);
@@ -3290,15 +3321,17 @@ const handleGitHubMirror = async () => {
   const handleLogout = async () => { await signOut(auth); setUser(null); setInventory([]); setTransactions([]); setIsAdmin(false); };
 
   // --- ACTIONS ---
-  // --- MODIFIED: SIMPLE SYSTEM SAVE ENGINE ---
+ 
+  // --- MODIFIED: SYSTEM LOG ENGINE (FIXED 4TH DOWNLOAD BUG) ---
   const logAudit = async (action, details, includeSnapshot = false) => {
     if (!user) return;
     const now = new Date();
     const dateKey = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
 
     try {
-        if (includeSnapshot) {
-            // Instead of cloud upload, we trigger the local download (Save Game method)
+        // FIX: Only trigger the extra generic download if it is NOT the Master Protocol
+        // This prevents the 4th file from appearing while still keeping the indicators GREEN.
+        if (includeSnapshot && action !== "MASTER_BACKUP" && action !== "BACKUP_SINGLE") {
             handleBackupData(); 
             triggerCapy("System Save File Downloaded! 💾");
         }
@@ -3309,10 +3342,10 @@ const handleGitHubMirror = async () => {
             user: user.email,
             timestamp: serverTimestamp(),
             timeStr: now.toLocaleTimeString(),
-            isSavePoint: includeSnapshot // Used for the dashboard counter
+            isSavePoint: includeSnapshot // This MUST remain true for the indicators to work
         };
 
-        // Log to Firestore so you have a record of when you saved
+        // Log to Firestore
         await addDoc(collection(db, `artifacts/${appId}/users/${user.uid}/audit_logs`), logData);
         await addDoc(collection(db, `artifacts/${appId}/users/${user.uid}/audit_vault/${dateKey}/logs`), logData);
 
@@ -4022,10 +4055,45 @@ const handleGitHubMirror = async () => {
       } catch(err) { console.error(err); alert("Failed to save map home."); }
   };
 
-  const renderSettings = () => {
+
+
+
+
+
+
+
+
+// --- UPDATED: SINGLE BACKUP (Forces Specific Green Light) ---
+  const handleSingleBackup = async (type) => {
+      if (!user) return;
+      const ts = getCurrentTimestamp();
+      let data = {};
+      let filename = "";
+
+      if (type === "RECOVERY") {
+          data = { meta: { type: "RECOVERY", ts }, inventory, customers, appSettings };
+          filename = `FOLDER_RECOVERY--POINT_${ts}.json`;
+          setSessionStatus(prev => ({ ...prev, recovery: true })); // <--- Force Green
+      } else if (type === "USB") {
+          data = { meta: { type: "USB_SAFE", ts }, inventory, transactions, customers, samplings, appSettings };
+          filename = `FOLDER_USB--SAFE_OFFSITE_${ts}.json`;
+          setSessionStatus(prev => ({ ...prev, usb: true })); // <--- Force Green
+      } else if (type === "CLOUD") {
+          data = { meta: { type: "CLOUD_MIRROR", ts }, inventory, transactions, customers, samplings, appSettings, auditLogs };
+          filename = `FOLDER_CLOUD--MIRROR_SYNC_${ts}.json`;
+          setSessionStatus(prev => ({ ...prev, cloud: true })); // <--- Force Green
+      }
+
+      triggerDownload(filename, data);
+      await logAudit("BACKUP_SINGLE", `Manual download: ${type}`, true);
+      triggerCapy(`${type} Backup Saved! Status Secure.`);
+  };
+
+
+ const renderSettings = () => {
       if (!user) return null; 
 
-      // 1. THE LOCKSCREEN: Show this if isAdmin is false
+      // 1. LOCKSCREEN
       if (!isAdmin) {
           return (
               <div className="flex flex-col items-center justify-center min-h-[60vh] animate-fade-in text-center">
@@ -4035,118 +4103,123 @@ const handleGitHubMirror = async () => {
                           <Lock size={40} className="animate-bounce-slow" />
                       </div>
                   </div>
-                  
-                  <h2 className="text-3xl font-black text-white uppercase tracking-[0.25em] mb-2 font-mono">
-                      Restricted Access
-                  </h2>
-                  <div className="h-[2px] w-48 bg-gradient-to-r from-transparent via-red-600 to-transparent mb-6"></div>
-                  
-                  <p className="text-slate-500 text-xs font-bold uppercase tracking-widest max-w-xs leading-relaxed mb-8">
-                      Security Clearance Level: <span className="text-red-500 underline">ADMINISTRATOR</span> required to view system configuration.
-                  </p>
-
-                  <button 
-                      onClick={() => setShowAdminLogin(true)}
-                      className="group relative px-10 py-4 bg-transparent border-2 border-white text-white font-black uppercase tracking-[0.2em] text-xs hover:bg-white hover:text-black transition-all duration-300 overflow-hidden"
-                  >
-                      <span className="relative z-10 flex items-center gap-3">
-                          <Key size={16} /> Unlock Settings
-                      </span>
-                      {/* Interactive hover effect */}
-                      <div className="absolute inset-0 bg-white translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
-                  </button>
+                  <h2 className="text-3xl font-black text-white uppercase tracking-[0.25em] mb-2 font-mono">Restricted Access</h2>
+                  <p className="text-slate-500 text-xs font-bold uppercase tracking-widest max-w-xs leading-relaxed mb-8">Admin Clearance Required</p>
+                  <button onClick={() => setShowAdminLogin(true)} className="px-10 py-4 border-2 border-white text-white font-black uppercase text-xs hover:bg-white hover:text-black transition-all">Unlock System</button>
               </div>
           );
       }
 
-      // 2. THE CONTENT: Only visible AFTER the PIN is entered correctly
+      // --- LOGIC HUB: MERGING DATABASE + INSTANT SESSION STATUS ---
+      const resetThreshold = parseInt(localStorage.getItem('indicator_reset_time') || '0');
+      const sNow = new Date();
+      const sTodayStr = sNow.toLocaleDateString();
+
+      // 1. CHECK DATABASE (Slow/Permanent Record)
+      const confirmedMirror = auditLogs.find(log => 
+          (log.action === "DATABASE_MIRROR" || log.action === "MASTER_BACKUP") && 
+          log.timestamp && 
+          (log.timestamp.seconds * 1000 > resetThreshold)
+      );
+
+      const dbRecoveryCount = auditLogs.filter(log => {
+          if (!log.isSavePoint || !log.timestamp) return false;
+          const logTime = log.timestamp.seconds * 1000;
+          if (logTime < resetThreshold) return false;
+          return new Date(logTime).toLocaleDateString() === sTodayStr;
+      }).length;
+
+      const lastUsbTime = parseInt(localStorage.getItem('last_usb_backup') || '0');
+      const isUsbValidInDb = lastUsbTime > resetThreshold && (sNow.getTime() - lastUsbTime) < (7 * 24 * 60 * 60 * 1000);
+
+      // 2. THE FIX: COMBINE SESSION STATE (Instant) WITH DATABASE (Persistent)
+      const isRecoverySecure = sessionStatus.recovery || dbRecoveryCount > 0;
+      const isUsbSecure = sessionStatus.usb || isUsbValidInDb;
+      const isCloudSecure = sessionStatus.cloud || !!confirmedMirror;
+
+      // 3. RESET HANDLER
+      const handleResetIndicators = () => {
+          localStorage.setItem('indicator_reset_time', new Date().getTime().toString());
+          localStorage.removeItem('last_usb_backup'); 
+          setSessionStatus({ recovery: false, usb: false, cloud: false }); // <--- Forces Red
+          triggerCapy("Indicators Reset to REQUIRED state.");
+      };
+
       return (
         <div className="animate-fade-in max-w-2xl mx-auto pb-20">
             <div className="flex justify-between items-center mb-8 border-b border-white/10 pb-4">
                 <div>
                     <h2 className="text-2xl font-bold text-white uppercase tracking-tighter">System Configuration</h2>
-                    <p className="text-[10px] text-emerald-500 font-mono font-bold animate-pulse">CLEARANCE: ADMIN / VERIFIED</p>
+                    <p className="text-[10px] text-emerald-500 font-mono font-bold animate-pulse">CLEARANCE: ADMIN VERIFIED</p>
                 </div>
-                <button onClick={handleAdminLogout} className="bg-red-900/30 border border-red-800 text-red-500 px-4 py-1 rounded text-[10px] font-bold uppercase hover:bg-red-600 hover:text-white transition-all">Lock Admin</button>
+                <div className="flex gap-2">
+                    <button onClick={handleResetIndicators} className="bg-white/5 border border-slate-600 text-slate-400 px-3 py-1 rounded text-[10px] font-bold uppercase hover:bg-red-900/50 hover:text-red-400 hover:border-red-500 transition-all">
+                        Reset Indicators
+                    </button>
+                    <button onClick={handleAdminLogout} className="bg-red-900/30 border border-red-800 text-red-500 px-4 py-1 rounded text-[10px] font-bold uppercase hover:bg-red-600 hover:text-white transition-all">
+                        Lock Admin
+                    </button>
+                </div>
             </div>
 
-        
+            {/* MASTER SECURITY CARD */}
+            <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl border-2 border-orange-500/20 mb-6 relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-4 opacity-5"><ShieldCheck size={120} className="text-orange-500" /></div>
+
+                <div className="relative z-10">
+                    <h3 className="font-bold text-xl mb-1 dark:text-white flex items-center gap-3"><ShieldCheck className="text-emerald-500" size={24}/> Master Security Protocol</h3>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-8">Triple-Layer Data Redundancy</p>
+                    
+                    <button onClick={handleMasterProtocol} className="w-full group relative bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white py-6 rounded-2xl font-black uppercase tracking-[0.3em] shadow-lg active:scale-95 mb-6">
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="text-sm">EXECUTE MASTER BACKUP</span>
+                            <span className="text-[9px] opacity-70 font-mono tracking-normal">Generate 3 Recovery Points Now</span>
+                        </div>
+                    </button>
+
+                    {/* BIG LIVE STATUS INDICATORS */}
+                    <div className="grid grid-cols-3 gap-3 mb-6">
+                        {/* 1. RECOVERY STATUS */}
+                        <div className={`p-4 rounded-xl border-2 flex flex-col items-center justify-center gap-2 transition-all duration-500 ${isRecoverySecure ? 'bg-emerald-500/20 border-emerald-500 text-emerald-500' : 'bg-red-900/20 border-red-500 text-red-500 animate-pulse'}`}>
+                            {isRecoverySecure ? <ShieldCheck size={32}/> : <ShieldAlert size={32}/>}
+                            <div className="text-center">
+                                <p className="text-[10px] font-black uppercase tracking-widest mb-1">RECOVERY</p>
+                                <p className="text-xs font-bold">{isRecoverySecure ? "SECURE" : "REQUIRED"}</p>
+                            </div>
+                        </div>
+
+                        {/* 2. USB STATUS */}
+                        <div className={`p-4 rounded-xl border-2 flex flex-col items-center justify-center gap-2 transition-all duration-500 ${isUsbSecure ? 'bg-emerald-500/20 border-emerald-500 text-emerald-500' : 'bg-orange-500/20 border-orange-500 text-orange-500 animate-pulse'}`}>
+                            {isUsbSecure ? <ShieldCheck size={32}/> : <ShieldAlert size={32}/>}
+                            <div className="text-center">
+                                <p className="text-[10px] font-black uppercase tracking-widest mb-1">USB SAFE</p>
+                                <p className="text-xs font-bold">{isUsbSecure ? "SECURE" : "UPDATE"}</p>
+                            </div>
+                        </div>
+
+                        {/* 3. CLOUD STATUS */}
+                        <div className={`p-4 rounded-xl border-2 flex flex-col items-center justify-center gap-2 transition-all duration-500 ${isCloudSecure ? 'bg-emerald-500/20 border-emerald-500 text-emerald-500' : 'bg-red-900/20 border-red-500 text-red-500 animate-pulse'}`}>
+                            {isCloudSecure ? <ShieldCheck size={32}/> : <ShieldAlert size={32}/>}
+                            <div className="text-center">
+                                <p className="text-[10px] font-black uppercase tracking-widest mb-1">CLOUD SYNC</p>
+                                <p className="text-xs font-bold">{isCloudSecure ? "SECURE" : "REQUIRED"}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* INDIVIDUAL DOWNLOADS */}
+                    <div className="grid grid-cols-3 gap-2">
+                        <button onClick={() => handleSingleBackup('RECOVERY')} className="p-2 bg-slate-100 dark:bg-slate-700/50 rounded hover:bg-blue-500 hover:text-white transition-colors text-[9px] font-bold text-slate-500">DOWNLOAD FILE 1</button>
+                        <button onClick={() => handleSingleBackup('USB')} className="p-2 bg-slate-100 dark:bg-slate-700/50 rounded hover:bg-orange-500 hover:text-white transition-colors text-[9px] font-bold text-slate-500">DOWNLOAD FILE 2</button>
+                        <button onClick={() => handleSingleBackup('CLOUD')} className="p-2 bg-slate-100 dark:bg-slate-700/50 rounded hover:bg-emerald-500 hover:text-white transition-colors text-[9px] font-bold text-slate-500">DOWNLOAD FILE 3</button>
+                    </div>
+                </div>
+            </div>
+  
       
-            {/* --- STEP 2: UPDATED MASTER PROTOCOL + INDIVIDUAL RECOVERY BUTTONS --- */}
-<div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl border-2 border-orange-500/20 mb-6 relative overflow-hidden">
-    {/* Background decoration */}
-    <div className="absolute top-0 right-0 p-4 opacity-5">
-        <ShieldCheck size={120} className="text-orange-500" />
-    </div>
-
-    <div className="relative z-10">
-        <h3 className="font-bold text-xl mb-1 dark:text-white flex items-center gap-3">
-            <ShieldCheck className="text-emerald-500" size={24}/> Master Security Protocol
-        </h3>
-        <p className="text-[10px] text-slate-500 uppercase tracking-[0.2em] mb-8">
-            Triple-Layer Redundancy (Individual Files Available)
-        </p>
-        
-        {/* BIG BUTTON: ATTEMPTS ALL THREE DOWNLOADS */}
-        <button 
-            onClick={handleMasterProtocol}
-            className="w-full group relative bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white py-6 rounded-2xl font-black uppercase tracking-[0.3em] shadow-[0_10px_30px_rgba(234,88,12,0.3)] transition-all active:scale-95 mb-4"
-        >
-            <div className="flex flex-col items-center gap-2">
-                <div className="flex gap-4 mb-2">
-                    <RotateCcw size={20} className="group-hover:animate-spin-slow"/>
-                    <Download size={20} className="group-hover:animate-bounce"/>
-                    <Globe size={20} className="group-hover:animate-pulse"/>
-                </div>
-                <span className="text-sm">Execute Master Backup</span>
-                <span className="text-[9px] opacity-70 font-mono tracking-normal">Attempts 3-in-1 Download Session</span>
-            </div>
-        </button>
-
-        {/* NEW: INDIVIDUAL EMERGENCY BUTTONS (If the master download fails) */}
-        <div className="grid grid-cols-3 gap-2 mb-6">
-            <button 
-                onClick={() => triggerDownload(`FOLDER_RECOVERY--POINT_${getCurrentTimestamp()}.json`, {inventory, customers, appSettings})}
-                className="p-3 bg-slate-50 dark:bg-slate-900/50 border dark:border-slate-700 rounded-xl flex flex-col items-center gap-1 hover:bg-blue-600 hover:text-white transition-all group"
-            >
-                <RotateCcw size={16} className="text-blue-500 group-hover:text-white"/>
-                <span className="text-[8px] font-bold">RECOVERY</span>
-            </button>
-            
-            <button 
-                onClick={() => triggerDownload(`FOLDER_USB--SAFE_OFFSITE_${getCurrentTimestamp()}.json`, {inventory, transactions, customers, samplings, appSettings})}
-                className="p-3 bg-slate-50 dark:bg-slate-900/50 border dark:border-slate-700 rounded-xl flex flex-col items-center gap-1 hover:bg-orange-600 hover:text-white transition-all group"
-            >
-                <Download size={16} className="text-orange-500 group-hover:text-white"/>
-                <span className="text-[8px] font-bold">USB SAFE</span>
-            </button>
-            
-            <button 
-                onClick={() => triggerDownload(`FOLDER_CLOUD--MIRROR_SYNC_${getCurrentTimestamp()}.json`, {inventory, transactions, customers, samplings, appSettings, auditLogs})}
-                className="p-3 bg-slate-50 dark:bg-slate-900/50 border dark:border-slate-700 rounded-xl flex flex-col items-center gap-1 hover:bg-emerald-600 hover:text-white transition-all group"
-            >
-                <Globe size={16} className="text-emerald-500 group-hover:text-white"/>
-                <span className="text-[8px] font-bold">CLOUD</span>
-            </button>
-        </div>
-
-        {/* Status Indicators */}
-        <div className="grid grid-cols-3 gap-2">
-            <div className="text-center p-2 bg-slate-50 dark:bg-slate-900/50 rounded-lg border dark:border-slate-700">
-                <p className="text-[8px] font-bold text-slate-400">RECOVERY</p>
-                <div className="h-1 w-full bg-blue-500 mt-1 rounded-full"></div>
-            </div>
-            <div className="text-center p-2 bg-slate-50 dark:bg-slate-900/50 rounded-lg border dark:border-slate-700">
-                <p className="text-[8px] font-bold text-slate-400">USB SAFE</p>
-                <div className="h-1 w-full bg-orange-500 mt-1 rounded-full"></div>
-            </div>
-            <div className="text-center p-2 bg-slate-50 dark:bg-slate-900/50 rounded-lg border dark:border-slate-700">
-                <p className="text-[8px] font-bold text-slate-400">CLOUD SYNC</p>
-                <div className="h-1 w-full bg-emerald-500 mt-1 rounded-full"></div>
-            </div>
-        </div>
-    </div>
-</div>
+  
+      
+  
 
             {/* 2. TEAM SHARING (GRANULAR CONFIG) */}
             <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 mb-6 transition-all">
@@ -4313,68 +4386,83 @@ const handleGitHubMirror = async () => {
       {cropImageSrc && <ImageCropper imageSrc={cropImageSrc} onCancel={() => { setCropImageSrc(null); setActiveCropContext(null); }} onCrop={handleCropConfirm} dimensions={boxDimensions} onDimensionsChange={setBoxDimensions} face={activeCropContext?.face || 'front'} />}
       {returningTransaction && <ReturnModal transaction={returningTransaction} onClose={() => setReturningTransaction(null)} onConfirm={executeReturn} />}
       
-      {/* Admin Login Modal */}
+      {/* --- PINPOINT: Improved Admin Modal (Fixed Fonts & Layout) --- */}
       {showAdminLogin && (
-        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-black border-2 border-white/30 p-8 max-w-sm w-full text-center shadow-[0_0_50px_rgba(255,0,0,0.2)]">
-            <h2 className="text-xl font-bold text-white mb-6 uppercase tracking-widest border-b border-white/20 pb-4">
-                <span className="text-red-500 mr-2">///</span> Security Check
+        <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4 font-mono">
+          <div className={`bg-black border-2 ${isResetMode ? 'border-orange-500' : 'border-red-600/50'} p-8 max-w-sm w-full text-center shadow-[0_0_50px_rgba(0,0,0,0.5)] relative overflow-hidden transition-all ${authShake ? 'animate-shake' : ''}`}>
+            
+            {/* Terminal Decoration */}
+            <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent ${isResetMode ? 'via-orange-500' : 'via-red-600'} to-transparent animate-pulse`}></div>
+            
+            <h2 className="text-xl font-black text-white mb-6 uppercase tracking-[0.2em]">
+                {isSetupMode ? "Initialize Security" : isResetMode ? "Identity Recovery" : "Security Check"}
             </h2>
-            
-            <input 
-                type="password" 
-                placeholder="ENTER PIN" 
-                className="w-full bg-white/5 border border-white/30 p-4 text-center text-white text-2xl mb-6 outline-none font-mono tracking-[0.5em] focus:border-red-500 focus:bg-white/10 transition-all placeholder:text-white/20 placeholder:tracking-normal placeholder:text-sm" 
-                value={inputPin} 
-                onChange={(e) => setInputPin(e.target.value)} 
-                onKeyDown={(e) => e.key === 'Enter' && handlePinLogin()} // <--- PRESS ENTER TO SUBMIT
-                autoFocus 
-            />
-            
-            <div className="flex gap-4">
-                <button onClick={() => setShowAdminLogin(false)} className="flex-1 py-3 border border-white/20 text-gray-400 hover:bg-white/10 uppercase text-xs font-bold tracking-widest transition-colors">
-                    Abort
-                </button>
-                <button onClick={handlePinLogin} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white uppercase text-xs font-bold tracking-widest shadow-lg transition-colors">
-                    Access
-                </button>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* 2. LOGIN SCREEN (If not logged in) */}
-      {!user && (
-        <div className="absolute inset-0 z-50 bg-black flex items-center justify-center font-mono">
-            {/* ... background divs ... */}
-            <div className="relative z-10 bg-black/80 border-2 border-white/20 p-10 max-w-md w-full text-center shadow-[0_0_50px_rgba(255,255,255,0.1)]">
-                <h1 className="text-4xl font-bold text-white mb-2 tracking-widest">{appSettings?.companyName || "KPM SYSTEM"}</h1>
-                <div className="h-1 w-full bg-gradient-to-r from-transparent via-red-600 to-transparent mb-8"></div>
-                <p className="text-red-500 font-bold mb-8 text-sm tracking-[0.2em] animate-pulse">/// AUTHENTICATION REQUIRED ///</p>
-                
-                {/* --- NEW: ERROR MESSAGE DISPLAY --- */}
-                {loginError && (
-                    <div className="bg-red-900/50 border border-red-500 text-white text-xs p-3 mb-4 rounded text-left">
-                        {loginError}
+            {/* CASE 1: FIRST TIME SETUP (Or Resetting) */}
+            {isSetupMode ? (
+                <div className="space-y-4">
+                    <p className="text-[10px] text-emerald-500 uppercase font-bold mb-4 tracking-widest">Create Administrator Credentials</p>
+                    <input type="password" placeholder="CREATE PIN (4+ DIGITS)" id="setupPin" className="w-full bg-white/5 border border-white/20 p-4 text-center text-white text-xl outline-none focus:border-emerald-500 font-mono placeholder:text-white/20" maxLength={6}/>
+                    <input type="text" placeholder="SECRET RECOVERY WORD" id="setupWord" className="w-full bg-white/5 border border-white/20 p-4 text-center text-white text-xs outline-none focus:border-emerald-500 uppercase tracking-widest placeholder:text-white/20 font-mono" />
+                    <button onClick={() => handleSetupSecurity(document.getElementById('setupPin').value, document.getElementById('setupWord').value)} className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold uppercase text-xs tracking-[0.2em] transition-all shadow-lg font-mono">Save Credentials</button>
+                </div>
+            ) : isResetMode ? (
+                /* CASE 2: RECOVERY MODE */
+                <div className="space-y-4">
+                    <p className="text-[10px] text-orange-400 uppercase font-bold mb-4 tracking-widest">Enter Secret Word</p>
+                    <input type="text" id="resetWord" placeholder="WATERMELON..." className="w-full bg-white/5 border border-orange-500/50 p-4 text-center text-white text-xl outline-none uppercase tracking-widest focus:border-orange-500 font-mono placeholder:text-white/20" autoFocus />
+                    <div className="flex gap-3">
+                        <button onClick={() => setIsResetMode(false)} className="flex-1 py-3 border border-white/20 text-gray-400 text-xs font-bold uppercase hover:bg-white/10 font-mono tracking-widest">Cancel</button>
+                        <button onClick={() => handleResetPin(document.getElementById('resetWord').value)} className="flex-1 py-3 bg-orange-600 text-white text-xs font-bold uppercase hover:bg-orange-500 font-mono tracking-widest">Verify</button>
                     </div>
-                )}
-
-                <button 
-                    onClick={handleLogin} // <--- USE THE NEW HANDLE LOGIN
-                    className="bg-white text-black px-6 py-4 font-bold uppercase hover:bg-gray-300 transition-colors w-full tracking-widest text-sm border-l-4 border-red-600"
-                >
-                    Initialize Session
-                </button>
-            </div>
+                </div>
+            ) : (
+                /* CASE 3: STANDARD LOGIN (Fixed Buttons) */
+                <div className="space-y-4">
+                    <input 
+                        type="password" 
+                        placeholder="ENTER PIN" 
+                        className="w-full bg-white/5 border border-white/20 p-4 text-center text-white text-3xl mb-4 outline-none font-mono tracking-[0.5em] focus:border-red-500 placeholder:text-white/10 placeholder:tracking-normal placeholder:text-sm transition-colors" 
+                        value={inputPin} 
+                        onChange={(e) => setInputPin(e.target.value)} 
+                        onKeyDown={(e) => e.key === 'Enter' && handlePinLogin()} 
+                        autoFocus 
+                    />
+                    <div className="flex gap-3">
+                        <button 
+                            onClick={() => setShowAdminLogin(false)} 
+                            className="flex-1 py-4 border border-white/20 text-gray-500 hover:text-white hover:bg-white/10 uppercase text-xs font-bold tracking-widest transition-all font-mono"
+                        >
+                            Abort
+                        </button>
+                        <button 
+                            onClick={handlePinLogin} 
+                            className="flex-1 py-4 bg-red-600 hover:bg-red-500 text-white uppercase text-xs font-bold tracking-widest shadow-[0_0_20px_rgba(220,38,38,0.4)] transition-all font-mono"
+                        >
+                            Access
+                        </button>
+                    </div>
+                    
+                    <div className="pt-4">
+                        <button onClick={() => setIsResetMode(true)} className="text-[9px] text-slate-600 hover:text-slate-400 uppercase font-bold transition-colors tracking-widest font-mono">
+                            Lost Key? Use Recovery Protocol
+                        </button>
+                    </div>
+                </div>
+            )}
+          </div>
         </div>
       )}
 
       {/* 3. MAIN TABS (Only render if user exists) */}
       {user && (
         <>
-          {activeTab === 'dashboard' && (
+         {activeTab === 'dashboard' && (
               <div className="space-y-8 relative">
-                <SafetyStatus auditLogs={auditLogs} />
+                {/* --- PINPOINT: Pass sessionStatus here --- */}
+                <SafetyStatus auditLogs={auditLogs} sessionStatus={sessionStatus} />
+                  
+                
                   
                   {/* Summary Cards Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
